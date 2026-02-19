@@ -5,7 +5,7 @@ from rclpy.executors import SingleThreadedExecutor
 from threading import Thread, Lock
 from typing import List, Callable, Dict, Any, Optional
 from sensor_msgs.msg import Joy
-from std_msgs.msg import Float64, String, Float64MultiArray, Int8
+from std_msgs.msg import Float64, String, Float64MultiArray, Int8, Int32
 import json
 import math
 
@@ -18,9 +18,12 @@ class ROS2Bridge(Node):
         self.pubjoint2 = self.create_publisher(Float64, '/arm_teleop/joint2', 10)
         self.pubjoint3 = self.create_publisher(Float64, '/arm_teleop/joint3', 10)
         self.pubjoint4 = self.create_publisher(Float64, '/arm_teleop/joint4', 10)
-        self.pubjoint5 = self.create_publisher(Float64, '/arm_teleop/joint5', 10)
-        self.pubcamera = self.create_publisher(Float64, '/arm_teleop/camera', 10)
+        self.pubjoint5 = self.create_publisher(Float64, '/arm_teleop/servo_rotacion', 10)
+        self.pubcamera = self.create_publisher(Float64, '/arm_teleop/camera1', 10)
+        self.pubcamera2 = self.create_publisher(Float64, '/arm_teleop/camera2', 10)
         self.pubgripper = self.create_publisher(Float64, '/arm_teleop/gripper', 10)
+        self.pub_linear_actuator = self.create_publisher(Float64, '/arm_teleop/linear_actuator', 10)
+        
 
         self.pub_input_target = self.create_publisher(Float64MultiArray, '/input_target', 10)
         self.pub_init_state = self.create_publisher(Int8, '/input_state', 10)
@@ -35,6 +38,8 @@ class ROS2Bridge(Node):
         self.joint4_msg = Float64()
         self.joint5_msg = Float64()
         self.camera_msg = Float64()
+        self.camera2_msg = Float64()
+        self.linear_actuator_msg = Float64()
         self.gripper_msg = Float64()
         self.init_state_msg = Int8()
         self.input_target_msg = Float64MultiArray()
@@ -155,9 +160,17 @@ class ROS2Bridge(Node):
         self.camera_msg.data = float(cam)
         self.pubcamera.publish(self.camera_msg)
 
+    def _publish_camera2(self, cam: float) -> None:
+        self.camera2_msg.data = float(cam)
+        self.pubcamera2.publish(self.camera2_msg)
+
     def _publish_gripper(self, grip: float) -> None:
-        self.gripper_msg.data = float(grip)
+        self.gripper_msg.data = float(grip) * 0.3
         self.pubgripper.publish(self.gripper_msg)
+
+    def _publish_linear_actuator(self, value: float) -> None:
+        self.linear_actuator_msg.data = float(value)
+        self.pub_linear_actuator.publish(self.linear_actuator_msg)
 
     def _extract_angles_array(self, payload: Any) -> Optional[List[float]]:
         if isinstance(payload, dict) and "data" in payload:
@@ -187,8 +200,14 @@ class ROS2Bridge(Node):
                 if mtype == "camera":
                     self._publish_camera(data.get("data"))
                     return
+                if mtype == "camera2":
+                    self._publish_camera2(data.get("data"))
+                    return
                 if mtype == "gripper":
                     self._publish_gripper(data.get("data"))
+                    return
+                if mtype == "linear_actuator":
+                    self._publish_linear_actuator(data.get("data"))
                     return
                 if mtype == "pose":
                     pose = data.get("data", {})
@@ -210,6 +229,8 @@ class ROS2Bridge(Node):
                     raise ValueError("Formato inválido para joint_angles (combinado)")
             if "camera" in data and isinstance(data["camera"], dict) and "data" in data["camera"]:
                 self._publish_camera(data["camera"]["data"])
+            if "camera2" in data and isinstance(data["camera2"], dict) and "data" in data["camera2"]:
+                self._publish_camera2(data["camera2"]["data"])
             if "gripper" in data and isinstance(data["gripper"], dict) and "data" in data["gripper"]:
                 self._publish_gripper(data["gripper"]["data"])
             if "pose" in data and isinstance(data["pose"], dict):
