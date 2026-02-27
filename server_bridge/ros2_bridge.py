@@ -1,4 +1,4 @@
-# ros2_bridge.py (versión con ROS timer para enviar pose a WS)
+# ros2_bridge.py (versión con ROS timer para enviar pose a WS + Lab integration)
 import rclpy
 from rclpy.node import Node
 from rclpy.executors import SingleThreadedExecutor
@@ -13,7 +13,9 @@ class ROS2Bridge(Node):
     def __init__(self):
         super().__init__('fastapi_ros2_bridge')
 
-        # Publishers (si mandas q1..q5/cámara/gripper desde backend)
+        # ---------------------------------------------------------------
+        # ARM Publishers
+        # ---------------------------------------------------------------
         self.pubjoint1 = self.create_publisher(Float64, '/arm_teleop/joint1', 10)
         self.pubjoint2 = self.create_publisher(Float64, '/arm_teleop/joint2', 10)
         self.pubjoint3 = self.create_publisher(Float64, '/arm_teleop/joint3', 10)
@@ -21,17 +23,18 @@ class ROS2Bridge(Node):
         self.pubjoint5 = self.create_publisher(Float64, '/arm_teleop/servo_rotacion', 10)
         self.pubcamera = self.create_publisher(Float64, '/arm_teleop/camera1', 10)
         self.pubcamera2 = self.create_publisher(Float64, '/arm_teleop/camera2', 10)
+        self.pubcamera3 = self.create_publisher(Float64, '/arm_teleop/camera3', 10)
+        self.pubcamera4 = self.create_publisher(Float64, '/arm_teleop/camera4', 10)
         self.pubgripper = self.create_publisher(Float64, '/arm_teleop/gripper', 10)
         self.pub_linear_actuator = self.create_publisher(Float64, '/arm_teleop/linear_actuator', 10)
-        
 
         self.pub_input_target = self.create_publisher(Float64MultiArray, '/input_target', 10)
         self.pub_init_state = self.create_publisher(Int8, '/input_state', 10)
 
-        # Suscripción al joystick
+        # Joystick
         self.subscriber_joy = self.create_subscription(Joy, "joy", self.callbackjoy, 10)
 
-        # Mensajes cache
+        # Mensajes cache ARM
         self.joint1_msg = Float64()
         self.joint2_msg = Float64()
         self.joint3_msg = Float64()
@@ -39,6 +42,8 @@ class ROS2Bridge(Node):
         self.joint5_msg = Float64()
         self.camera_msg = Float64()
         self.camera2_msg = Float64()
+        self.camera3_msg = Float64()
+        self.camera4_msg = Float64()
         self.linear_actuator_msg = Float64()
         self.gripper_msg = Float64()
         self.init_state_msg = Int8()
@@ -48,33 +53,71 @@ class ROS2Bridge(Node):
         self.buttons: List[int] = []
         self.axes: List[float] = []
 
-        # Pose almacenada (NO se publica a ROS; solo a WS)
+        # Pose (solo a WS, no a ROS)
         self._pose_lock = Lock()
         self.pose: Dict[str, float] = {
             "x": 0.15, "y": 0.0, "z": 0.35, "roll": 0.0, "pitch": 0.0
         }
-
-        # Última pose enviada (para deadband)
         self._last_sent_pose: Dict[str, float] = dict(self.pose)
 
-        # Pasos de incremento (joystick)
-        self.linear_step = 0.003   # m por tick
-        self.angular_step = 1.0    # grados por tick
+        # Pasos joystick
+        self.linear_step = 0.003
+        self.angular_step = 1.0
 
-        # Callbacks para push a WebSocket (los registra el router FastAPI)
+        # Callbacks ARM → WS
         self._callbacks: List[Callable[[str], None]] = []
 
-        # ======== TIMER de envío WS ========
-        # Frecuencia de envío (parametrizable)
-        self.pose_ws_hz = 10.0  # 30 Hz (ajusta 20–60 Hz según necesites)
-        self.deadband_lin = 1e-4   # m (no mandar si cambio < deadband)
-        self.deadband_ang = 0.05   # deg
-        self.quant_lin = 1e-4      # m (cuantiza para evitar ruido)
-        self.quant_ang = 0.01      # deg
-
+        # Timer de envío pose WS
+        self.pose_ws_hz = 10.0
+        self.deadband_lin = 1e-4
+        self.deadband_ang = 0.05
+        self.quant_lin = 1e-4
+        self.quant_ang = 0.01
         self.pose_pub_timer = self.create_timer(1.0 / self.pose_ws_hz, self.timer_publish_pose_ws)
 
-    # ====== JOYSTICK → POSE (solo actualiza estado; NO envía WS aquí) ======
+        # ---------------------------------------------------------------
+        # LAB Publishers (UI → ROS2) — all Float64
+        # ---------------------------------------------------------------
+        self.pub_elevator = self.create_publisher(Float64, '/lab/elevator', 10)
+        self.pub_servo_right = self.create_publisher(Float64, '/lab/servo_right', 10)
+        self.pub_servo_left = self.create_publisher(Float64, '/lab/servo_left', 10)
+        self.pub_gate_left = self.create_publisher(Float64, '/lab/gate_left', 10)
+        self.pub_gate_right = self.create_publisher(Float64, '/lab/gate_right', 10)
+        self.pub_lab_camera = self.create_publisher(Float64, '/lab/camera_servo', 10)
+
+        self._lab_publishers: Dict[str, Any] = {
+            "elevator": self.pub_elevator,
+            "servo_right": self.pub_servo_right,
+            "servo_left": self.pub_servo_left,
+            "gate_left": self.pub_gate_left,
+            "gate_right": self.pub_gate_right,
+            "lab_camera": self.pub_lab_camera,
+        }
+
+        # Mensajes cache LAB
+        self._lab_msg = Float64()
+
+        # ---------------------------------------------------------------
+        # LAB Subscribers (ROS2 → UI) — gas sensors, all Float64
+        # ---------------------------------------------------------------
+        self._lab_callbacks: List[Callable[[str], None]] = []
+        self._gas_values: Dict[str, float] = {
+            "co2": 0.0, "nh3": 0.0, "alcohol": 0.0, "benzene": 0.0
+        }
+
+        self.create_subscription(Float64, '/lab/gas/co2', lambda msg: self._on_gas("co2", msg), 10)
+        self.create_subscription(Float64, '/lab/gas/nh3', lambda msg: self._on_gas("nh3", msg), 10)
+        self.create_subscription(Float64, '/lab/gas/alcohol', lambda msg: self._on_gas("alcohol", msg), 10)
+        self.create_subscription(Float64, '/lab/gas/benzene', lambda msg: self._on_gas("benzene", msg), 10)
+
+        # Push gas data to WS at 1 Hz
+        self.create_timer(1.0, self._publish_gas_to_ws)
+
+        self.get_logger().info("🚀 ROS2Bridge initialized (arm + lab)")
+
+    # ---------------------------------------------------------------
+    # JOYSTICK → POSE
+    # ---------------------------------------------------------------
     def callbackjoy(self, msg: Joy):
         self.buttons = list(msg.buttons[:])
         self.axes = list(msg.axes[:])
@@ -87,19 +130,18 @@ class ROS2Bridge(Node):
             pitch = self.pose["pitch"]
 
         try:
-            # Mapeo ejemplo (ajústalo a tu control)
-            x += self.linear_step * self._get_axis_safe(1)  # LY
-            y += self.linear_step * self._get_axis_safe(3)  # RX
+            x += self.linear_step * self._get_axis_safe(1)
+            y += self.linear_step * self._get_axis_safe(3)
 
-            lt = self._get_axis_safe(2)   # LT [-1..1]
-            rt = self._get_axis_safe(5)   # RT [-1..1]
-            z += ( self.linear_step * (abs(rt) - 1.0) ) - ( self.linear_step * (abs(lt) - 1.0) )
+            lt = self._get_axis_safe(2)
+            rt = self._get_axis_safe(5)
+            z += (self.linear_step * (abs(rt) - 1.0)) - (self.linear_step * (abs(lt) - 1.0))
 
-            lb = self._get_button_safe(4) # LB
-            rb = self._get_button_safe(5) # RB
+            lb = self._get_button_safe(4)
+            rb = self._get_button_safe(5)
             roll += self.angular_step * (lb - rb)
 
-            hat_y = self._get_axis_safe(7) # D-pad vertical (1,0,-1)
+            hat_y = self._get_axis_safe(7)
             pitch += self.angular_step * hat_y
 
         except Exception as e:
@@ -107,9 +149,10 @@ class ROS2Bridge(Node):
 
         self._set_pose({"x": x, "y": y, "z": z, "roll": roll, "pitch": pitch})
 
-    # ====== TIMER: publica pose a WS a frecuencia fija ======
+    # ---------------------------------------------------------------
+    # TIMER: pose → WS
+    # ---------------------------------------------------------------
     def timer_publish_pose_ws(self):
-    # Lee pose actual bajo lock
         with self._pose_lock:
             payload = {
                 "type": "pose",
@@ -122,15 +165,53 @@ class ROS2Bridge(Node):
                 }
             }
         msg = json.dumps(payload)
-
-        # Empuja a todos los WS con los callbacks (el router lo corre en el event loop correcto)
         for cb in self._callbacks:
             try:
                 cb(msg)
             except Exception as e:
                 self.get_logger().warn(f"WS callback error: {e}")
 
-    # ====== utilidades ======
+    # ---------------------------------------------------------------
+    # LAB: publish control command
+    # ---------------------------------------------------------------
+    def publish_lab_control(self, control_type: str, value):
+        pub = self._lab_publishers.get(control_type)
+        if pub is None:
+            self.get_logger().warn(f"Unknown lab control: {control_type}")
+            return
+        self._lab_msg.data = float(value)
+        pub.publish(self._lab_msg)
+
+    # ---------------------------------------------------------------
+    # LAB: gas sensor callbacks
+    # ---------------------------------------------------------------
+    def _on_gas(self, gas_key: str, msg):
+        self._gas_values[gas_key] = msg.data
+
+    def _publish_gas_to_ws(self):
+        if not self._lab_callbacks:
+            return
+        payload = json.dumps({
+            "type": "gas_data",
+            "data": {
+                "co2": round(self._gas_values["co2"], 2),
+                "nh3": round(self._gas_values["nh3"], 2),
+                "alcohol": round(self._gas_values["alcohol"], 2),
+                "benzene": round(self._gas_values["benzene"], 2),
+            }
+        })
+        for cb in self._lab_callbacks:
+            try:
+                cb(payload)
+            except Exception as e:
+                self.get_logger().warn(f"Lab WS callback error: {e}")
+
+    def register_lab_callback(self, callback: Callable[[str], None]):
+        self._lab_callbacks.append(callback)
+
+    # ---------------------------------------------------------------
+    # Utilities
+    # ---------------------------------------------------------------
     def _get_axis_safe(self, idx: int) -> float:
         return float(self.axes[idx]) if idx < len(self.axes) else 0.0
 
@@ -145,7 +226,9 @@ class ROS2Bridge(Node):
             self.pose["roll"] = float(p.get("roll", self.pose["roll"]))
             self.pose["pitch"] = float(p.get("pitch", self.pose["pitch"]))
 
-    # ====== Helpers publicación (si decides publicar q/cam/grip desde backend) ======
+    # ---------------------------------------------------------------
+    # ARM: publish helpers
+    # ---------------------------------------------------------------
     def _publish_angles(self, angles: List[float]) -> None:
         if len(angles) != 5:
             raise ValueError("joint_angles requiere 5 valores (q1..q5)")
@@ -164,8 +247,16 @@ class ROS2Bridge(Node):
         self.camera2_msg.data = float(cam)
         self.pubcamera2.publish(self.camera2_msg)
 
+    def _publish_camera3(self, cam: float) -> None:
+        self.camera3_msg.data = float(cam)
+        self.pubcamera3.publish(self.camera3_msg)
+
+    def _publish_camera4(self, cam: float) -> None:
+        self.camera4_msg.data = float(cam)
+        self.pubcamera4.publish(self.camera4_msg)
+
     def _publish_gripper(self, grip: float) -> None:
-        self.gripper_msg.data = float(grip) * 0.3
+        self.gripper_msg.data = float(grip)
         self.pubgripper.publish(self.gripper_msg)
 
     def _publish_linear_actuator(self, value: float) -> None:
@@ -183,7 +274,9 @@ class ROS2Bridge(Node):
             return [float(v) for v in payload]
         return None
 
-    # ====== Entrada desde WebSocket (frontend -> backend) ======
+    # ---------------------------------------------------------------
+    # ARM: WebSocket → ROS2
+    # ---------------------------------------------------------------
     def publish_message(self, message: str):
         try:
             data = json.loads(message)
@@ -203,6 +296,12 @@ class ROS2Bridge(Node):
                 if mtype == "camera2":
                     self._publish_camera2(data.get("data"))
                     return
+                if mtype == "camera3":
+                    self._publish_camera3(data.get("data"))
+                    return
+                if mtype == "camera4":
+                    self._publish_camera4(data.get("data"))
+                    return
                 if mtype == "gripper":
                     self._publish_gripper(data.get("data"))
                     return
@@ -213,7 +312,6 @@ class ROS2Bridge(Node):
                     pose = data.get("data", {})
                     if isinstance(pose, dict):
                         self._set_pose(pose)
-                        # no hace falta re-emitir aquí; el timer lo enviará a frecuencia fija
                         return
                     raise ValueError("Formato inválido para pose")
 
@@ -231,11 +329,14 @@ class ROS2Bridge(Node):
                 self._publish_camera(data["camera"]["data"])
             if "camera2" in data and isinstance(data["camera2"], dict) and "data" in data["camera2"]:
                 self._publish_camera2(data["camera2"]["data"])
+            if "camera3" in data and isinstance(data["camera3"], dict) and "data" in data["camera3"]:
+                self._publish_camera3(data["camera3"]["data"])
+            if "camera4" in data and isinstance(data["camera4"], dict) and "data" in data["camera4"]:
+                self._publish_camera4(data["camera4"]["data"])
             if "gripper" in data and isinstance(data["gripper"], dict) and "data" in data["gripper"]:
                 self._publish_gripper(data["gripper"]["data"])
             if "pose" in data and isinstance(data["pose"], dict):
                 self._set_pose(data["pose"])
-                # tampoco re-emites aquí; el timer se encarga
 
         except (json.JSONDecodeError, KeyError, ValueError, TypeError) as e:
             self.get_logger().error(f'Error processing message: {e} | raw="{message}"')
@@ -248,7 +349,9 @@ class ROS2Bridge(Node):
         self.input_target_msg.data = targets
         self.pub_input_target.publish(self.input_target_msg)
 
-    # ====== Push ROS2 -> WS (registro desde el router) ======
+    # ---------------------------------------------------------------
+    # ARM: Push ROS2 → WS
+    # ---------------------------------------------------------------
     def listener_callback(self, msg: String):
         self.get_logger().info(f'Received: "{msg.data}"')
         for cb in self._callbacks:
@@ -277,7 +380,10 @@ def stop_ros2():
         executor.shutdown()
     if ros2_node is not None:
         ros2_node.destroy_node()
-    rclpy.shutdown()
+    try:
+        rclpy.shutdown()
+    except Exception:
+        pass
 
 def get_ros2_node() -> ROS2Bridge:
     return ros2_node
