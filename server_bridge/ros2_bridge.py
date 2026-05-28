@@ -1,10 +1,10 @@
-# ros2_bridge.py (versión con ROS timer para enviar pose a WS + Lab integration)
+# ros2_bridge.py (versión con ROS timer para enviar pose a WS + Lab integration + IMU)
 import rclpy
 from rclpy.node import Node
 from rclpy.executors import SingleThreadedExecutor
 from threading import Thread, Lock
 from typing import List, Callable, Dict, Any, Optional
-from sensor_msgs.msg import Joy
+from sensor_msgs.msg import Joy, Imu
 from std_msgs.msg import Float64, String, Float64MultiArray, Int8, Int32
 import json
 import math
@@ -70,6 +70,13 @@ class ROS2Bridge(Node):
         }
         self._last_sent_pose: Dict[str, float] = dict(self.pose)
 
+        # ---------------------------------------------------------------
+        # IMU Subscriber (NUEVO)
+        # ---------------------------------------------------------------
+        self._yaw = 0.0
+        self.create_subscription(Imu, '/bno055/imu', self._imu_callback, 10)
+        self.create_timer(0.1, self._publish_imu_to_ws) # Timer a 10 Hz para la brújula
+
         # Pasos joystick
         self.linear_step = 0.003
         self.angular_step = 1.0
@@ -123,7 +130,40 @@ class ROS2Bridge(Node):
         # Push gas data to WS at 1 Hz
         self.create_timer(1.0, self._publish_gas_to_ws)
 
-        self.get_logger().info("🚀 ROS2Bridge initialized (arm + lab)")
+        self.get_logger().info("🚀 ROS2Bridge initialized (arm + lab + imu)")
+
+    # ---------------------------------------------------------------
+    # IMU → WS (NUEVO)
+    # ---------------------------------------------------------------
+    def _imu_callback(self, msg: Imu):
+        # Extraemos el cuaternión
+        q = msg.orientation
+        
+        # Fórmula matemática pura para convertir de Cuaternión a Euler (Yaw / Heading)
+        siny_cosp = 2.0 * (q.w * q.z + q.x * q.y)
+        cosy_cosp = 1.0 - 2.0 * (q.y * q.y + q.z * q.z)
+        yaw_rad = math.atan2(siny_cosp, cosy_cosp)
+        
+        # Lo convertimos a grados
+        self._yaw = math.degrees(yaw_rad)
+
+    def _publish_imu_to_ws(self):
+        if not self._callbacks:
+            return
+            
+        payload = {
+            "type": "imu_data",
+            "data": {
+                "yaw": round(self._yaw, 2)
+            }
+        }
+        
+        msg = json.dumps(payload)
+        for cb in self._callbacks:
+            try:
+                cb(msg)
+            except Exception as e:
+                self.get_logger().warn(f"WS IMU callback error: {e}")
 
 
 
