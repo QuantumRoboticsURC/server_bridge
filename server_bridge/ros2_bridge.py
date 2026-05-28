@@ -34,6 +34,16 @@ class ROS2Bridge(Node):
         # Joystick
         self.subscriber_joy = self.create_subscription(Joy, "joy", self.callbackjoy, 10)
 
+
+        # GPS subscribers
+        self._gps: Dict[str, float] = {"latitude": 0.0, "longitude": 0.0}
+
+        self.create_subscription(Float64, '/latitude', lambda msg: self._on_gps("latitude", msg), 10)
+        self.create_subscription(Float64, '/longitude', lambda msg: self._on_gps("longitude", msg), 10)
+
+        # Push GPS to WS at 2 Hz
+        self.create_timer(0.5, self._publish_gps_to_ws)
+
         # Mensajes cache ARM
         self.joint1_msg = Float64()
         self.joint2_msg = Float64()
@@ -114,6 +124,31 @@ class ROS2Bridge(Node):
         self.create_timer(1.0, self._publish_gas_to_ws)
 
         self.get_logger().info("🚀 ROS2Bridge initialized (arm + lab)")
+
+
+
+
+    # ---------------------------------------------------------------
+    # GPS: subscribers + push to WS
+    # ---------------------------------------------------------------
+    def _on_gps(self, key: str, msg):
+        self._gps[key] = msg.data
+
+    def _publish_gps_to_ws(self):
+        if not self._lab_callbacks:
+            return
+        payload = json.dumps({
+            "type": "gps_data",
+            "data": {
+                "latitude": round(self._gps["latitude"], 7),
+                "longitude": round(self._gps["longitude"], 7),
+            }
+        })
+        for cb in self._lab_callbacks:
+            try:
+                cb(payload)
+            except Exception as e:
+                self.get_logger().warn(f"GPS WS callback error: {e}")
 
     # ---------------------------------------------------------------
     # JOYSTICK → POSE
