@@ -10,6 +10,8 @@ from contextlib import asynccontextmanager
 from .routes.ws_router import pos_router, register_ros2_callback
 from .routes.autonomous import autonomous_router
 from .routes.lab import lab_router, register_ros2_callback as register_lab_ros2_callback
+from .routes.science_arm import science_arm_router, register_science_ros2_callback
+from .routes.microscope import microscope_router, register_micro_ros2_callback
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -18,6 +20,8 @@ async def lifespan(app: FastAPI):
     await asyncio.sleep(0.1)
     register_ros2_callback()
     register_lab_ros2_callback()
+    register_science_ros2_callback()
+    register_micro_ros2_callback()
     yield
     stop_ros2()
 
@@ -42,6 +46,8 @@ async def healthz():
 api.include_router(pos_router, prefix="/ws/connection", tags=["connection"])
 api.include_router(autonomous_router, prefix="/api/autonomous", tags=["autonomous"])
 api.include_router(lab_router, prefix="/ws/connection", tags=["connection"])
+api.include_router(science_arm_router, prefix="/ws/connection", tags=["connection"])
+api.include_router(microscope_router, prefix="/ws/connection", tags=["connection"])
 
 
 #includes
